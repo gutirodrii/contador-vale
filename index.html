@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Contador de vale</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Vale">
+<meta name="theme-color" content="#0f766e">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<style>
+  :root {
+    --bg: #f0fdfa; --fg: #134e4a; --muted: #5f7f7b; --accent: #0f766e;
+    --accent-fg: #fff; --card: #fff; --danger: #b91c1c; --pulse: #14b8a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #042f2e; --fg: #ccfbf1; --muted: #7fb5ad; --accent: #14b8a6;
+      --accent-fg: #042f2e; --card: #0b3b39; --danger: #f87171; --pulse: #5eead4;
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Rounded", system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+    padding: calc(env(safe-area-inset-top) + 24px) 16px calc(env(safe-area-inset-bottom) + 24px);
+    user-select: none; -webkit-user-select: none;
+  }
+  header { text-align: center; }
+  h1 { font-size: 1.1rem; font-weight: 600; margin: 0; letter-spacing: .02em; }
+  #estado { color: var(--muted); font-size: .95rem; margin-top: 6px; min-height: 1.3em; }
+  main { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  #contador {
+    font-size: min(38vw, 220px); font-weight: 800; line-height: 1;
+    font-variant-numeric: tabular-nums; transition: transform .15s ease, color .15s ease;
+  }
+  #contador.bump { transform: scale(1.15); color: var(--pulse); }
+  #oido {
+    color: var(--muted); font-size: .95rem; text-align: center; max-width: 32ch;
+    min-height: 2.6em; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  footer { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 100%; max-width: 360px; }
+  #boton {
+    width: 100%; border: 0; border-radius: 999px; padding: 18px; font-size: 1.15rem; font-weight: 700;
+    background: var(--accent); color: var(--accent-fg); cursor: pointer;
+  }
+  #boton.activo { background: var(--danger); color: #fff; }
+  .fila { display: flex; gap: 10px; width: 100%; }
+  .secundario {
+    flex: 1; border: 0; border-radius: 14px; padding: 12px; font-size: .95rem; font-weight: 600;
+    background: var(--card); color: var(--fg); cursor: pointer;
+  }
+  #aviso { color: var(--danger); text-align: center; font-size: .95rem; max-width: 36ch; }
+  .punto { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--danger); margin-right: 6px; animation: latido 1.2s infinite; vertical-align: middle; }
+  @keyframes latido { 50% { opacity: .25; } }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Contador de "vale"</h1>
+    <div id="estado">Pulsa Empezar para escuchar</div>
+  </header>
+
+  <main>
+    <div id="contador" aria-live="polite">0</div>
+    <div id="oido"></div>
+    <div id="aviso"></div>
+  </main>
+
+  <footer>
+    <button id="boton">Empezar</button>
+    <div class="fila">
+      <button class="secundario" id="menos">−1</button>
+      <button class="secundario" id="mas">+1</button>
+      <button class="secundario" id="reset">Reiniciar</button>
+    </div>
+  </footer>
+
+<script>
+(() => {
+  const PALABRA = "vale";
+  const CLAVE = "contador-vale";
+  const $ = (id) => document.getElementById(id);
+  const ui = { contador: $("contador"), estado: $("estado"), oido: $("oido"), aviso: $("aviso"), boton: $("boton") };
+
+  // --- Persistencia ---------------------------------------------------------
+  let base = 0;
+  try { base = parseInt(localStorage.getItem(CLAVE), 10) || 0; } catch {}
+  const guardar = () => { try { localStorage.setItem(CLAVE, String(base + sesion)); } catch {} };
+
+  // "sesion" = vales detectados en la sesión de reconocimiento actual.
+  // Se recalcula entero en cada resultado (los parciales pueden cambiar),
+  // y solo sube, así un parcial que se corrige no resta.
+  let sesion = 0;
+
+  function pintar(subio) {
+    ui.contador.textContent = base + sesion;
+    if (subio) {
+      ui.contador.classList.add("bump");
+      setTimeout(() => ui.contador.classList.remove("bump"), 180);
+      if (navigator.vibrate) navigator.vibrate(40);
+    }
+  }
+  pintar(false);
+
+  const normalizar = (t) => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const contar = (t) => (normalizar(t).match(new RegExp(`\\b${PALABRA}\\b`, "g")) || []).length;
+
+  // --- Reconocimiento de voz ------------------------------------------------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    ui.aviso.textContent = "Este navegador no permite reconocimiento de voz. En iPhone usa Safari (iOS 14.5 o superior).";
+    ui.boton.disabled = true;
+    ui.boton.style.opacity = .5;
+  }
+
+  let rec = null;
+  let escuchando = false;
+  let wakeLock = null;
+
+  function crear() {
+    const r = new SR();
+    r.lang = "es-ES";
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+
+    r.onresult = (e) => {
+      // Safari a veces devuelve resultados acumulados (cada uno repite el anterior);
+      // si un resultado empieza por el texto del anterior, nos quedamos solo con el nuevo.
+      const trozos = [];
+      for (let i = 0; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript.trim();
+        const prev = trozos[trozos.length - 1];
+        if (prev !== undefined && normalizar(t).startsWith(normalizar(prev))) trozos[trozos.length - 1] = t;
+        else trozos.push(t);
+      }
+      const texto = trozos.join(" ");
+      ui.oido.textContent = texto.slice(-120);
+      const n = contar(texto);
+      if (n > sesion) { sesion = n; guardar(); pintar(true); }
+    };
+
+    r.onerror = (e) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        ui.aviso.textContent = "Sin permiso de micrófono/voz. Ve a Ajustes › Safari › Micrófono y permite el acceso. También necesita Siri/Dictado activado (Ajustes › General › Teclado › Activar dictado).";
+        parar();
+      } else if (e.error !== "no-speech" && e.error !== "aborted") {
+        ui.estado.textContent = `Error: ${e.error}. Reintentando…`;
+      }
+    };
+
+    // Safari corta el reconocimiento cada cierto tiempo: consolidamos y volvemos a arrancar.
+    r.onend = () => {
+      base += sesion; sesion = 0; guardar();
+      if (escuchando) setTimeout(() => { try { r.start(); } catch {} }, 150);
+    };
+    return r;
+  }
+
+  async function empezar() {
+    ui.aviso.textContent = "";
+    escuchando = true;
+    rec = rec || crear();
+    try { rec.start(); } catch {}
+    ui.boton.textContent = "Parar";
+    ui.boton.classList.add("activo");
+    ui.estado.innerHTML = `<span class="punto"></span>Escuchando… di "${PALABRA}"`;
+    try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
+  }
+
+  function parar() {
+    escuchando = false;
+    try { rec && rec.stop(); } catch {}
+    ui.boton.textContent = "Empezar";
+    ui.boton.classList.remove("activo");
+    ui.estado.textContent = "En pausa";
+    try { wakeLock && wakeLock.release(); } catch {}
+    wakeLock = null;
+  }
+
+  ui.boton.addEventListener("click", () => (escuchando ? parar() : empezar()));
+
+  // Pantalla bloqueada / app en segundo plano: iOS corta el micro. Al volver, retomamos.
+  document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState === "visible" && escuchando) {
+      try { rec.start(); } catch {}
+      try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
+    }
+  });
+
+  // --- Ajustes manuales -----------------------------------------------------
+  $("mas").addEventListener("click", () => { base++; guardar(); pintar(true); });
+  $("menos").addEventListener("click", () => { if (base + sesion > 0) { base--; guardar(); pintar(false); } });
+  $("reset").addEventListener("click", () => {
+    if (confirm("¿Poner el contador a 0?")) { base = -sesion; guardar(); pintar(false); ui.oido.textContent = ""; }
+  });
+})();
+</script>
+</body>
+</html>
